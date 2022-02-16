@@ -7,6 +7,23 @@ from pyproj import Transformer
 from shapely.geometry import Point
 
 
+def wrap_180(x):
+    """
+    Converts an angle or array of angles in degrees to the range -180 to +180 degrees.
+
+    Args:
+        x (:obj:`float` or :obj:`numpy.ndarray`): Input angle(s) (degrees)
+
+    Returns:
+        :obj:`float` or :obj:`numpy.ndarray`: The input angle(s) converted to the range -180 to +180 degrees (degrees)
+    """
+    input_type = type(x)
+
+    x = x % 360.0  # convert to range 0 to 360 degrees
+    x = np.where(x > 180.0, x - 360.0, x)
+    return x if input_type == np.ndarray else float(x)
+
+
 class AssetData(object):
     """
     This class wraps around a Pandas dataframe that contains
@@ -44,13 +61,15 @@ class AssetData(object):
                 "com.databricks.spark.csv"
             ).options(header="true", inferschema="true").save("%s/%s.csv" % (path, name))
 
-    def prepare(self, active_turbine_ids, active_tower_ids, srs="epsg:4326"):
+    def prepare(self, active_turbine_ids=None, active_tower_ids=None, srs="epsg:4326"):
         """Prepare the asset data frame for further analysis work. Currently, this function calls parse_geometry(srs)
         and calculate_nearest(active_turbine, active_tower), passing through the arguments to this function.
 
         Args:
-            active_turbine_ids (:obj:`list`): List of IDs of turbines to consider.
-            active_tower_ids (:obj:`list`): List of IDs of met towers to consider.
+            active_turbine_ids (:obj:`list`, optional): Optional list of IDs of turbines to consider. If None, all
+                turbines will be considered. Defaults to None.
+            active_tower_ids (:obj:`list`, optional): Optional list of IDs of met towers to consider. If None, all met
+                towers will be considered. Defaults to None.
             srs (:obj:`str`, optional): Used to define the coordinate
                 reference system (CRS). Defaults to the European
                 Petroleum Survey Group (EPSG) code 4326 to be used with
@@ -61,7 +80,9 @@ class AssetData(object):
 
         """
         self.parse_geometry(srs)
-        self.calculate_nearest(active_turbine_ids, active_tower_ids)
+        self.calculate_nearest(
+            active_turbine_ids=active_turbine_ids, active_tower_ids=active_tower_ids
+        )
 
     def parse_geometry(self, srs="epsg:4326", zone=None, longitude=None):
         """Calculate UTM coordinates from latitude/longitude.
@@ -101,19 +122,28 @@ class AssetData(object):
         )
         self._asset["geometry"] = [Point(lat, lon) for lat, lon in zip(lats, lons)]
 
-    def calculate_nearest(self, active_turbine_ids, active_tower_ids):
+    def calculate_nearest(self, active_turbine_ids=None, active_tower_ids=None):
         """Create or overwrite a column called 'nearest_turbine_id' or 'nearest_tower_id' which contains the asset id
-        of the closest active turbine or tower to the closest turbine or tower. The columns are only valid for turbines
-        or towers listed in the parameters of this function, and it will only calculate the value of the correct column
-        for each asset. Turbines, for example, will have null 'nearest_tower_id' and vice versa.
+        of the closest active turbine or tower to the closest turbine or tower. If specified, the column will only be
+        valid for the turbines or towers listed in the arguments of this function. Additionally, it will only calculate
+        the value of the correct column for each asset. Turbines, for example, will have null 'nearest_tower_id' and
+        vice versa.
 
         Args:
-            active_turbine_ids (:obj:`list`): List of IDs of turbines to consider.
-            active_tower_ids (:obj:`list`): List of IDs of met towers to consider.
+            active_turbine_ids (:obj:`list`, optional): Optional list of IDs of turbines to consider. If None, all
+                turbines will be considered. Defaults to None.
+            active_tower_ids (:obj:`list`, optional): Optional list of IDs of met towers to consider. If None, all met
+                towers will be considered. Defaults to None.
 
         Returns: None
             Sets asset 'nearest_turbine_id' and 'nearest_tower_id' column.
         """
+        if active_turbine_ids is None:
+            active_turbine_ids = self._asset.loc[self._asset["type"] == "turbine", "id"].tolist()
+
+        if active_tower_ids is None:
+            active_tower_ids = self._asset.loc[self._asset["type"] == "tower", "id"].tolist()
+
         self._asset["nearest_turbine_id"] = None
         if active_turbine_ids is not None and len(active_turbine_ids) > 0:
             nn = self.nearest_neighbors()
@@ -127,14 +157,112 @@ class AssetData(object):
                 v = [val for val in v if val in active_tower_ids]
                 self._asset.loc[self._asset["id"] == k, "nearest_tower_id"] = v[0]
 
-    def distance_matrix(self):
-        ret = np.ones((self._asset.shape[0], self._asset.shape[0])) * -1
-        for i, j in itertools.combinations(self._asset.index, 2):
-            point1 = self._asset.loc[i, "geometry"]
-            point2 = self._asset.loc[j, "geometry"]
+    def distance_matrix(self, asset_type=None):
+        """
+        Returns a matrix containing distances between each pair of assets, for all assets or a specific asset type.
+
+        Args:
+            asset_type (:obj:`string`, optional): Optional asset type to calculate distances for
+            ("turbine" or "tower"). If None, all assets are included. Defaults to None.
+
+        Returns:
+            :obj:`numpy.ndarray`: Matrix containing distances between each pair of assets.
+        """
+        if asset_type is None:
+            df_asset_sub = self._asset
+        else:
+            df_asset_sub = self._asset.loc[self._asset["type"] == asset_type].reset_index()
+        ret = np.ones((df_asset_sub.shape[0], df_asset_sub.shape[0])) * -1
+        for i, j in itertools.combinations(df_asset_sub.index, 2):
+            point1 = df_asset_sub.loc[i, "geometry"]
+            point2 = df_asset_sub.loc[j, "geometry"]
             distance = point1.distance(point2)
             ret[i, j] = ret[j, i] = distance
         return ret
+
+    def direction_matrix(self, asset_type=None):
+        """
+        Returns a matrix containing directions between each pair of assets, for all assets or a specific asset type.
+
+        Args:
+            asset_type (:obj:`string`, optional): Optional asset type to calculate directions for
+                ("turbine" or "tower"). If None, all assets are included. Defaults to None.
+
+        Returns:
+            :obj:`numpy.ndarray`: Matrix containing directions between each pair of assets (defined as the direction
+                from the asset given by the 1st index to the asset given by the 2nd index, relative to north)
+        """
+        if asset_type is None:
+            df_asset_sub = self._asset
+        else:
+            df_asset_sub = self._asset.loc[self._asset["type"] == asset_type].reset_index()
+        ret = np.ones((df_asset_sub.shape[0], df_asset_sub.shape[0])) * -1
+        for i, j in itertools.permutations(df_asset_sub.index, 2):
+            point1 = df_asset_sub.loc[i, "geometry"]
+            point2 = df_asset_sub.loc[j, "geometry"]
+            direction = np.degrees(np.arctan2(point2.x - point1.x, point2.y - point1.y)) % 360.0
+            ret[i, j] = direction
+        return ret
+
+    def get_freestream_turbines(self, wd, freestream_method="sector", sector_width=45.0):
+        """
+        Returns a list of freestream (unwaked) turbines for a given wind direction. Freestream turbines can be
+        identified using different methods ("sector" or "IEC" methods). For the sector method, if there are any
+        turbines upstream of a turbine within a fixed wind direction sector centered on the wind direction of interest,
+        defined by the sector_width argument, the turbine is condiered waked. The IEC method uses the freestream
+        definition provided in Annex A of IEC 61400-12-1 (2005).
+
+        Args:
+            wd (:obj:`float`): Wind direction to identify freestream turbines for (degrees)
+            freestream_method (:obj:`string`, optional): Method used to identify freestream turbines
+                ("sector" or "IEC"). Defaults to "sector".
+            sector_width (:obj:`float`, optional): Width of wind direction sector centered on the wind direction of
+                interest used to determine whether a turbine is waked for the "sector" method (degrees). For a given
+                turbine, if any other upstream turbines are located within the sector, then the turbine is considered
+                waked. Defaults to 45 degrees.
+
+        Returns:
+            :obj:`list`: List of freestream turbine asset IDs
+        """
+        turbine_direction_matrix = self.direction_matrix(asset_type="turbine")
+
+        if freestream_method == "sector":
+            # find turbines for which no other upstream turbines are within half of the sector width of the specified
+            # wind direction
+            freestream_indices = np.all(
+                (np.abs(wrap_180(wd - turbine_direction_matrix)) > 0.5 * sector_width)
+                | np.diag(np.ones(len(turbine_direction_matrix), dtype=bool)),
+                axis=1,
+            )
+        if freestream_method == "IEC":
+            # find freestream turbines according to the definition in Annex A of IEC 61400-12-1 (2005)
+            turbine_distance_matrix = self.distance_matrix(asset_type="turbine")
+
+            # normalize distances by rotor diameters of upstream turbines
+            rotor_diameters = np.ones((len(turbine_direction_matrix), 1)) * np.array(
+                self._asset.loc[self._asset["type"] == "turbine", "rotor_diameter_m"]
+            )
+            turbine_distance_matrix /= rotor_diameters
+
+            freestream_indices = np.all(
+                (
+                    (turbine_distance_matrix > 2)
+                    & (
+                        np.abs(wrap_180(wd - turbine_direction_matrix))
+                        > 0.5
+                        * (1.3 * np.degrees(np.arctan(2.5 / turbine_distance_matrix + 0.15)) + 10)
+                    )
+                )
+                | (turbine_distance_matrix > 20)
+                | (turbine_distance_matrix < 0),
+                axis=1,
+            )
+        else:
+            raise ValueError(
+                'Invalid freestream method. Currently, "sector" and "IEC" are supported.'
+            )
+
+        return self.turbine_ids()[freestream_indices]
 
     def asset_ids(self):
         return self._asset.loc[:, "id"].values
