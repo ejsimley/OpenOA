@@ -204,7 +204,7 @@ class AssetData(object):
             ret[i, j] = direction
         return ret
 
-    def get_freestream_turbines(self, wd, freestream_method="sector", sector_width=45.0):
+    def get_freestream_turbines(self, wd, freestream_method="sector", sector_width=90.0):
         """
         Returns a list of freestream (unwaked) turbines for a given wind direction. Freestream turbines can be
         identified using different methods ("sector" or "IEC" methods). For the sector method, if there are any
@@ -234,7 +234,7 @@ class AssetData(object):
                 | np.diag(np.ones(len(turbine_direction_matrix), dtype=bool)),
                 axis=1,
             )
-        if freestream_method == "IEC":
+        elif freestream_method == "IEC":
             # find freestream turbines according to the definition in Annex A of IEC 61400-12-1 (2005)
             turbine_distance_matrix = self.distance_matrix(asset_type="turbine")
 
@@ -262,7 +262,7 @@ class AssetData(object):
                 'Invalid freestream method. Currently, "sector" and "IEC" are supported.'
             )
 
-        return self.turbine_ids()[freestream_indices]
+        return list(self.turbine_ids()[freestream_indices])
 
     def asset_ids(self):
         return self._asset.loc[:, "id"].values
