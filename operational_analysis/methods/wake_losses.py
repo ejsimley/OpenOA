@@ -29,9 +29,9 @@ class WakeLosses(object):
         Initialize wake loss analysis object with data and parameters.
 
         Args:
-         plant (:obj:`PlantData object`): PlantData object from which PlantAnalysis should draw data
-         wind_direction_col (:obj:`string`): SCADA column to use for wind direction
-         wind_direction_turbine_ids (:obj:`list`, optional): List of turbine IDs used to calculate the average wind direction at each time step. If None, all turbines will be used. Defaults to None.
+            plant (:obj:`PlantData object`): PlantData object from which PlantAnalysis should draw data
+            wind_direction_col (:obj:`string`): SCADA column to use for wind direction
+            wind_direction_turbine_ids (:obj:`list`, optional): List of turbine IDs used to calculate the average wind direction at each time step. If None, all turbines will be used. Defaults to None.
         """
         logger.info("Initializing WakeLosses analysis object")
 
@@ -45,13 +45,13 @@ class WakeLosses(object):
             self._wind_direction_turbine_ids = list(self._plant.scada.df.id.unique())
 
         # Run preprocessing steps
-        self.calculate_scada_plant_dataframes()
+        self._calculate_aggregate_dataframe()
 
     @logged_method_call
-    def calculate_scada_plant_dataframes(self):
+    def _calculate_aggregate_dataframe(self):
         """
-        Creates a multiindex scada data frame with relevant columns and a data frame for plant-level variables to be
-        used for the wake loss analysis. The reference mean wind direction is then added to the plant-level data frame.
+        Creates a data frame with relevant scada columns and plant-level columns to be used for the wake loss analysis.
+        The reference mean wind direction is then added to the data frame.
 
         Args:
             (None)
@@ -60,40 +60,27 @@ class WakeLosses(object):
             (None)
         """
 
-        # keep relevant SCADA columns and group data frame by time and turbine ID
-        self._scada_df = (
+        # keep relevant SCADA columns, create a unique time index and two-level turbine variable columns
+        # (variable name and turbine ID)
+        self._aggregate_df = (
             self._plant.scada.df[["id", "wmet_wdspd_avg", self._wind_direction_col, "energy_kwh"]]
             .reset_index()
             .set_index(["time", "id"])
+            .unstack()
         )
 
         # remove times with any missing turbine IDs or data
-        # first drop rows with any NaNs
-        self._scada_df = self._scada_df.dropna(how="any")
-
-        # next drop times with any missing turbine IDs
         # TODO: revisit because this may remove too many samples
-        self._scada_df = self._scada_df.loc[
-            self._scada_df.groupby("time")[self._wind_direction_col]
-            .transform("size")
-            .eq(len(self._plant.scada.df.id.unique()))
-        ]
-        self._scada_df.index = self._scada_df.index.remove_unused_levels()
-
-        # initialize an empty plant-level data frame with a single datetime index
-        self._plant_df = pd.DataFrame(
-            index=self._scada_df.index.levels[0],
-            columns=["wmet_HorWdDir_ref", "energy_kw_mean", "energy_kw_mean_freestream"],
-        )
+        self._aggregate_df = self._aggregate_df.dropna(how="any")
 
         # Calculate reference mean wind direction
-        self.calculate_mean_wind_direction()
+        self._calculate_mean_wind_direction()
 
         # Drop turbine-level wind direction column
-        self._scada_df = self._scada_df.drop(columns=[self._wind_direction_col])
+        self._aggregate_df = self._aggregate_df.drop(columns=[self._wind_direction_col])
 
     @logged_method_call
-    def calculate_mean_wind_direction(self):
+    def _calculate_mean_wind_direction(self):
         """
         Calculates the mean wind direction at each time step using the specified SCADA wind direction column for the
         specified subset of turbines. This reference mean wind direction is added to the plant-level data frame.
@@ -104,30 +91,76 @@ class WakeLosses(object):
             (None)
         """
 
-        self._plant_df["wmet_HorWdDir_ref"] = (
+        self._aggregate_df["wmet_HorWdDir_ref"] = (
             np.degrees(
                 np.arctan2(
                     np.sin(
                         np.radians(
-                            self._scada_df.loc[
-                                (slice(None), self._wind_direction_turbine_ids),
-                                self._wind_direction_col,
+                            self._aggregate_df["wmet_HorWdDir_avg"][
+                                self._wind_direction_turbine_ids
                             ]
                         )
-                    )
-                    .groupby("time")
-                    .mean(),
+                    ).mean(axis=1),
                     np.cos(
                         np.radians(
-                            self._scada_df.loc[
-                                (slice(None), self._wind_direction_turbine_ids),
-                                self._wind_direction_col,
+                            self._aggregate_df["wmet_HorWdDir_avg"][
+                                self._wind_direction_turbine_ids
                             ]
                         )
-                    )
-                    .groupby("time")
-                    .mean(),
+                    ).mean(axis=1),
                 )
             )
             % 360.0
         )
+
+    @logged_method_call
+    def run(self, wd_bin_width=1.0, freestream_sector_width=90.0):
+        """
+        Estimates wake losses by comparing wind plant energy production to energy production of turbines identified as operating in freestream conditions. Wake losses are expressed as a fractional loss (e.g., 0.05 indicates a wake loss values of 5%).
+
+        Args:
+            wd_bin_width (:obj:`float`, optional): Wind diretion bin size when identifying freestream wind turbines
+                (degrees). Defaults to 1 degree.
+            freestream_sector_width (:obj:`float`, optional): Wind diretion sector size to use when identifying
+                freestream wind turbines (degrees). If no turbines are located upstream of a particular turbine within
+                the sector, the turbine will be classified as a freestream turbine. Defaults to 90 degrees.
+        Returns:
+            (None)
+        """
+
+        # For 1-degree wind direction bins, identify freestream turbines and calculate mean energy production
+        self._aggregate_df["energy_kwh_mean_freestream"] = np.nan
+
+        # Use 1-degree bins
+        wd_bins = np.arange(0.0, 360.0, wd_bin_width)
+
+        for wd in wd_bins:
+
+            # identify freestream turbines
+            freestream_turbine_ids = self._plant.asset.get_freestream_turbines(
+                wd, sector_width=freestream_sector_width
+            )
+
+            if wd > 0.0:
+                wd_bin_flag = (
+                    self._aggregate_df["wmet_HorWdDir_ref"] >= (wd - 0.5 * wd_bin_width)
+                ) & (self._aggregate_df["wmet_HorWdDir_ref"] < (wd + 0.5 * wd_bin_width))
+            else:
+                # Handle wind direction wrapping between 0 and 360 degrees for first bin
+                wd_bin_flag = (
+                    self._aggregate_df["wmet_HorWdDir_ref"] >= (360.0 - 0.5 * wd_bin_width)
+                ) | (self._aggregate_df["wmet_HorWdDir_ref"] < (wd + 0.5 * wd_bin_width))
+
+            # assign mean energy of freestrema turbines
+            self._aggregate_df.loc[
+                wd_bin_flag, "energy_kwh_mean_freestream"
+            ] = self._aggregate_df.loc[wd_bin_flag, ("energy_kwh", freestream_turbine_ids)].mean(
+                axis=1
+            )
+
+            # calculate wake losses during period of record
+            self.wake_losses_por = (
+                1
+                - self._aggregate_df["energy_kwh"].mean(axis=1).sum()
+                / self._aggregate_df["energy_kwh_mean_freestream"].sum()
+            )
