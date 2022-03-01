@@ -63,7 +63,7 @@ class WakeLosses(object):
         # keep relevant SCADA columns, create a unique time index and two-level turbine variable columns
         # (variable name and turbine ID)
         self._aggregate_df = (
-            self._plant.scada.df[["id", "wmet_wdspd_avg", self._wind_direction_col, "energy_kwh"]]
+            self._plant.scada.df[["id", "wmet_wdspd_avg", self._wind_direction_col, "wtur_W_avg"]]
             .reset_index()
             .set_index(["time", "id"])
             .unstack()
@@ -96,14 +96,14 @@ class WakeLosses(object):
                 np.arctan2(
                     np.sin(
                         np.radians(
-                            self._aggregate_df["wmet_HorWdDir_avg"][
+                            self._aggregate_df[self._wind_direction_col][
                                 self._wind_direction_turbine_ids
                             ]
                         )
                     ).mean(axis=1),
                     np.cos(
                         np.radians(
-                            self._aggregate_df["wmet_HorWdDir_avg"][
+                            self._aggregate_df[self._wind_direction_col][
                                 self._wind_direction_turbine_ids
                             ]
                         )
@@ -129,7 +129,7 @@ class WakeLosses(object):
         """
 
         # For 1-degree wind direction bins, identify freestream turbines and calculate mean energy production
-        self._aggregate_df["energy_kwh_mean_freestream"] = np.nan
+        self._aggregate_df["wtur_W_mean_freestream"] = np.nan
 
         # Use 1-degree bins
         wd_bins = np.arange(0.0, 360.0, wd_bin_width)
@@ -152,15 +152,13 @@ class WakeLosses(object):
                 ) | (self._aggregate_df["wmet_HorWdDir_ref"] < (wd + 0.5 * wd_bin_width))
 
             # assign mean energy of freestrema turbines
-            self._aggregate_df.loc[
-                wd_bin_flag, "energy_kwh_mean_freestream"
-            ] = self._aggregate_df.loc[wd_bin_flag, ("energy_kwh", freestream_turbine_ids)].mean(
-                axis=1
-            )
+            self._aggregate_df.loc[wd_bin_flag, "wtur_W_mean_freestream"] = self._aggregate_df.loc[
+                wd_bin_flag, ("wtur_W_avg", freestream_turbine_ids)
+            ].mean(axis=1)
 
             # calculate wake losses during period of record
             self.wake_losses_por = (
                 1
-                - self._aggregate_df["energy_kwh"].mean(axis=1).sum()
-                / self._aggregate_df["energy_kwh_mean_freestream"].sum()
+                - self._aggregate_df["wtur_W_avg"].mean(axis=1).sum()
+                / self._aggregate_df["wtur_W_mean_freestream"].sum()
             )

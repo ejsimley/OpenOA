@@ -120,7 +120,8 @@ def bin_filter(
         threshold(:obj:`float`): outlier threshold (multiplicative factor of std of <value_col> in bin)
         bin_min(:obj:`float`): minimum bin value below which flag should not be applied
         bin_max(:obj:`float`): maximum bin value above which flag should not be applied
-        threshold_type(:obj:`str`): option to apply a 'std' or 'scalar' based threshold
+        threshold_type(:obj:`str`): option to apply a 'std', 'scalar', or 'mad' (median absolute deviation)
+            based threshold
         center_type(:obj:`str`): option to use a 'mean' or 'median' center for each bin
         direction(:obj:`str`): option to apply flag only to data 'above' or 'below' the mean, otherwise the default is
         'all'
@@ -167,6 +168,8 @@ def bin_filter(
             ran = y_bin.std() * threshold
         elif threshold_type == "scalar":
             ran = threshold
+        elif threshold_type == "mad":
+            ran = (y_bin - cent).abs().median() * threshold
 
         # Perform flagging depending on specfied direction
         if direction == "all":
