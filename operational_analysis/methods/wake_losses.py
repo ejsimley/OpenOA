@@ -34,7 +34,8 @@ class WakeLosses(object):
         self,
         plant,
         wind_direction_col,
-        wind_direction_turbine_ids=None,
+        wind_direction_data_type="scada",
+        wind_direction_asset_ids=None,
         UQ=True,
         start_date=None,
         end_date=None,
@@ -46,9 +47,12 @@ class WakeLosses(object):
 
         Args:
             plant (:obj:`PlantData object`): PlantData object from which PlantAnalysis should draw data
-            wind_direction_col (:obj:`string`): SCADA column to use for wind direction
-            wind_direction_turbine_ids (:obj:`list`, optional): List of turbine IDs used to calculate the average wind
-                direction at each time step. If None, all turbines will be used. Defaults to None.
+            wind_direction_col (:obj:`string`): Column name to use for wind direction
+            wind_direction_data_type (:obj:`string`, optional): Data type to use for wind directions ("scada" for
+                turbine measurements or "tower" for meteorological tower measurements). Defaults to "scada".
+            wind_direction_asset_ids (:obj:`list`, optional): List of asset IDs (turbines or met towers) used to
+                calculate the average wind direction at each time step. If None, all assets of the corresponding data
+                type will be used. Defaults to None.
             UQ (:obj:`bool`, optional): Dertermines whether to perform uncertainty quantification using Monte Carlo
                 simulation (True) or provide a single wake loss estimate (False). Defaults to True.
             start_date (:obj:`pandas.Timestamp` or :obj:`string`, optional): Start datetime for wake loss analysis. If
@@ -67,6 +71,7 @@ class WakeLosses(object):
         self._plant = plant
         self._plant.asset.prepare()
         self._wind_direction_col = wind_direction_col
+        self._wind_direction_data_type = wind_direction_data_type
         self._UQ = UQ
         self._reanal_products = reanal_products
 
@@ -83,10 +88,12 @@ class WakeLosses(object):
 
         self._turbine_ids = list(self._plant.scada.df.id.unique())
 
-        if wind_direction_turbine_ids is not None:
-            self._wind_direction_turbine_ids = wind_direction_turbine_ids
-        else:
-            self._wind_direction_turbine_ids = self._turbine_ids
+        if wind_direction_asset_ids is not None:
+            self._wind_direction_asset_ids = wind_direction_asset_ids
+        elif self._wind_direction_data_type == "scada":
+            self._wind_direction_asset_ids = self._turbine_ids
+        elif self._wind_direction_data_type == "tower":
+            self._wind_direction_asset_ids = list(self._plant.tower.df.id.unique())
 
         if end_date_lt is not None:
             # Set minutes to 30 to handle time indices on the hour and on the half hour
@@ -275,6 +282,12 @@ class WakeLosses(object):
             # TODO: temp, remove after debugging
             # print("--- Starting wind direction loop %s seconds ---" % (time.time() - start_time))
 
+            # Find freestream turbines for each wind direction. Update the dictionary only when the set of turbines
+            # differs from the previous wind direction bin.
+            freestream_turbine_dict = {}
+
+            freestream_turbine_ids_prev = []
+
             for wd in wd_bins:
 
                 # identify freestream turbines
@@ -282,23 +295,63 @@ class WakeLosses(object):
                     wd, sector_width=self._run.freestream_sector_width
                 )
 
+                if freestream_turbine_ids != freestream_turbine_ids_prev:
+                    freestream_turbine_dict[wd] = freestream_turbine_ids
+                    freestream_turbine_ids_prev = freestream_turbine_ids
+
+            if freestream_turbine_dict[0.0] == list(freestream_turbine_dict.values())[-1]:
+                freestream_turbine_dict.pop(0.0)
+
+            # TODO: remove after testing
+            # for wd in list(freestream_turbine_dict.keys()):
+            #     print(wd)
+            #     print(freestream_turbine_dict[wd])
+
+            # Find freestream energy production for each wind direction sector containing the same freestream turbines
+
+            freestream_sector_wds = list(freestream_turbine_dict.keys())
+
+            for i_wd, wd in enumerate(freestream_sector_wds):
+
+                freestream_turbine_ids = freestream_turbine_dict[wd]
+
                 # if bootstrapping is enabled, randomly resample set of freestream turbines
-                # TODO: add back in after UQ experiment!!!
                 if self._bootstrap_data:
                     freestream_turbine_ids = random.choices(
                         freestream_turbine_ids, k=len(freestream_turbine_ids)
                     )
 
-                if wd > 0.0:
-                    wd_bin_flag = (
-                        self._aggregate_df_sample["wmet_HorWdDir_ref"] >= (wd - 0.5 * wd_bin_width)
-                    ) & (self._aggregate_df_sample["wmet_HorWdDir_ref"] < (wd + 0.5 * wd_bin_width))
-                else:
-                    # Handle wind direction wrapping between 0 and 360 degrees for first bin
+                # Check whether last wind direction in dictionary and handle wind direction wrapping
+                # between 0 and 360 degrees
+                if wd == 0.0:
                     wd_bin_flag = (
                         self._aggregate_df_sample["wmet_HorWdDir_ref"]
                         >= (360.0 - 0.5 * wd_bin_width)
-                    ) | (self._aggregate_df_sample["wmet_HorWdDir_ref"] < (wd + 0.5 * wd_bin_width))
+                    ) | (
+                        self._aggregate_df_sample["wmet_HorWdDir_ref"]
+                        < (freestream_sector_wds[i_wd + 1] - 0.5 * wd_bin_width)
+                    )
+                elif i_wd < len(freestream_sector_wds) - 1:
+                    wd_bin_flag = (
+                        self._aggregate_df_sample["wmet_HorWdDir_ref"] >= (wd - 0.5 * wd_bin_width)
+                    ) & (
+                        self._aggregate_df_sample["wmet_HorWdDir_ref"]
+                        < (freestream_sector_wds[i_wd + 1] - 0.5 * wd_bin_width)
+                    )
+                elif (i_wd == len(freestream_sector_wds) - 1) & (freestream_sector_wds[0] == 0.0):
+                    wd_bin_flag = (
+                        self._aggregate_df_sample["wmet_HorWdDir_ref"] >= (wd - 0.5 * wd_bin_width)
+                    ) & (
+                        self._aggregate_df_sample["wmet_HorWdDir_ref"]
+                        < (360.0 - 0.5 * wd_bin_width)
+                    )
+                else:  # last wind direction in dictionary and first wind direction is not zero:
+                    wd_bin_flag = (
+                        self._aggregate_df_sample["wmet_HorWdDir_ref"] >= (wd - 0.5 * wd_bin_width)
+                    ) | (
+                        self._aggregate_df_sample["wmet_HorWdDir_ref"]
+                        < (freestream_sector_wds[0] - 0.5 * wd_bin_width)
+                    )
 
                 # Assign representative energy and wind speed of freestream turbines. If correct_for_derating
                 # is True, only freestream turbines operating normally will be considered.
@@ -327,15 +380,20 @@ class WakeLosses(object):
                     axis=1
                 )
 
+            # Remove rows where no freestream turbines in normal operation were identified
+            self._aggregate_df_sample = self._aggregate_df_sample.dropna(
+                subset=[("wtur_W_mean_freestream", "")]
+            )
+
             # TODO: temp, remove after debugging
             # print("--- Finished wind direction loop %s seconds ---" % (time.time() - start_time))
 
             # calculate total plant-level wake losses during period of record
 
             # Determine ideal wind plant energy, correcting for derated turbines if correct_for_derating is True. If
-            # correct_for_derating is True, ideal energy is calculated as the sum of the power produced by derated turbines
-            # and the mean power produced by freestream turbines operating normally multiplied by the total number of
-            # turbines operating normally
+            # correct_for_derating is True, ideal energy is calculated as the sum of the power produced by derated
+            # turbines and the mean power produced by freestream turbines operating normally multiplied by the total
+            # number of turbines operating normally
             total_derated_turbine_power = (
                 self._aggregate_df_sample["wtur_W_avg"] * self._aggregate_df_sample["derate_flag"]
             ).sum(axis=1)
@@ -359,6 +417,18 @@ class WakeLosses(object):
                 - self._aggregate_df_sample["actual_plant_power"].sum()
                 / self._aggregate_df_sample["potential_plant_power"].sum()
             )
+
+            # bin wake losses by wind direction
+            # group wind farm efficiency by wind direction bin
+            self._aggregate_df_sample["winddirection_bin"] = (
+                self._wd_bin_width_LT_corr
+                * (
+                    self._aggregate_df_sample["wmet_HorWdDir_ref"] / self._wd_bin_width_LT_corr
+                ).round()
+            )
+            self._aggregate_df_sample.loc[
+                self._aggregate_df_sample["winddirection_bin"] == 360.0, "winddirection_bin"
+            ] = 0.0
 
             # calculate turbine-level wake losses during period of record
             turbine_wake_losses_por = len(self._turbine_ids) * [0.0]
@@ -384,32 +454,66 @@ class WakeLosses(object):
                     / self._aggregate_df_sample[("potential_turbine_power", t)].sum()
                 )
 
+            df_wd_bin = self._aggregate_df_sample.groupby("winddirection_bin").sum()
+
+            # Save plant and turbine-level wake losses binned by wind direction
+            wake_losses_por_wd = (
+                df_wd_bin["actual_plant_power"] / df_wd_bin["potential_plant_power"]
+            ).values
+
+            turbine_wake_losses_por_wd = np.empty(
+                [len(self._turbine_ids), int(360.0 / self._wd_bin_width_LT_corr)]
+            )
+            for i, t in enumerate(self._turbine_ids):
+                turbine_wake_losses_por_wd[i, :] = (
+                    df_wd_bin[("wtur_W_avg", t)] / df_wd_bin[("potential_turbine_power", t)]
+                ).values
+
             if self._UQ:
                 self.wake_losses_por[n] = wake_losses_por
                 self.turbine_wake_losses_por[n, :] = turbine_wake_losses_por
+                self.wake_losses_por_wd[n, :] = wake_losses_por_wd
+                self.turbine_wake_losses_por_wd[n, :, :] = turbine_wake_losses_por_wd
+
+                # Save plant and turbine-level wake losses binned by wind direction
+                self.wake_losses_por_wd[n, :] = (
+                    df_wd_bin["actual_plant_power"] / df_wd_bin["potential_plant_power"]
+                ).values
+
+                for i, t in enumerate(self._turbine_ids):
+                    self.turbine_wake_losses_por_wd[n, i, :] = (
+                        df_wd_bin[("wtur_W_avg", t)] / df_wd_bin[("potential_turbine_power", t)]
+                    ).values
 
                 # apply long-term correction to wake losses
-                wake_losses_lt, turbine_wake_losses_lt = self._apply_LT_correction()
+                (
+                    wake_losses_lt,
+                    turbine_wake_losses_lt,
+                    wake_losses_lt_wd,
+                    turbine_wake_losses_lt_wd,
+                ) = self._apply_LT_correction()  # , wake_losses_lt_wd
 
                 self.wake_losses_lt[n] = wake_losses_lt
                 self.turbine_wake_losses_lt[n, :] = turbine_wake_losses_lt
-
-            # TODO: group wake losses by wind direction and save to attribute (for plant and turbine). Use wd_LT_bin_size to bin when grouping
+                self.wake_losses_lt_wd[n, :] = wake_losses_lt_wd
+                self.turbine_wake_losses_lt_wd[n, :, :] = turbine_wake_losses_lt_wd
 
         if not self._UQ:
             # apply long-term correction to wake losses and average results over all reanalysis products
             self.wake_losses_por = wake_losses_por
             self.turbine_wake_losses_por = turbine_wake_losses_por
+            self.wake_losses_por_wd = wake_losses_por_wd
+            self.turbine_wake_losses_por_wd = turbine_wake_losses_por_wd
 
             wake_losses_lt_all_products = np.empty([len(self._reanal_products), 1])
             turbine_wake_losses_lt_all_products = np.empty(
                 [len(self._reanal_products), len(self._turbine_ids)]
             )
 
-            wake_losses_vs_wdir_lt_all_products = np.empty(
+            wake_losses_lt_wd_all_products = np.empty(
                 [len(self._reanal_products), int(360.0 / self._wd_bin_width_LT_corr)]
             )
-            turbine_wake_losses_vs_wdir_lt_all_products = np.empty(
+            turbine_wake_losses_lt_wd_all_products = np.empty(
                 [
                     len(self._reanal_products),
                     len(self._turbine_ids),
@@ -420,18 +524,24 @@ class WakeLosses(object):
             for i_rean, product in enumerate(self._reanal_products):
                 self._run.reanalysis_product = product
 
-                wake_losses_lt, turbine_wake_losses_lt = self._apply_LT_correction()
+                (
+                    wake_losses_lt,
+                    turbine_wake_losses_lt,
+                    wake_losses_lt_wd,
+                    turbine_wake_losses_lt_wd,
+                ) = self._apply_LT_correction()
 
                 wake_losses_lt_all_products[i_rean] = wake_losses_lt
                 turbine_wake_losses_lt_all_products[i_rean] = turbine_wake_losses_lt
 
+                wake_losses_lt_wd_all_products[i_rean] = wake_losses_lt_wd
+                turbine_wake_losses_lt_wd_all_products[i_rean] = turbine_wake_losses_lt_wd
+
             self.wake_losses_lt = np.mean(wake_losses_lt_all_products)
             self.turbine_wake_losses_lt = np.mean(turbine_wake_losses_lt_all_products, axis=0)
 
-            self._wake_losses_vs_wdir_lt = np.mean(wake_losses_vs_wdir_lt_all_products, axis=0)
-            self._turbine_wake_losses_vs_wdir_lt = np.mean(
-                turbine_wake_losses_vs_wdir_lt_all_products, axis=0
-            )
+            self.wake_losses_lt_wd = np.mean(wake_losses_lt_wd_all_products, axis=0)
+            self.turbine_wake_losses_lt_wd = np.mean(turbine_wake_losses_lt_wd_all_products, axis=0)
 
         else:
             # Calculate mean and standard deviation of wake losses from Monte Carlo simulations
@@ -491,6 +601,20 @@ class WakeLosses(object):
             self.wake_losses_lt = np.empty([self._num_sim, 1])
             self.turbine_wake_losses_lt = np.empty([self._num_sim, len(self._turbine_ids)])
 
+            # For saving wake losses binned by wind direction
+            self.wake_losses_por_wd = np.empty(
+                [self._num_sim, int(360.0 / self._wd_bin_width_LT_corr)]
+            )
+            self.turbine_wake_losses_por_wd = np.empty(
+                [self._num_sim, len(self._turbine_ids), int(360.0 / self._wd_bin_width_LT_corr)]
+            )
+            self.wake_losses_lt_wd = np.empty(
+                [self._num_sim, int(360.0 / self._wd_bin_width_LT_corr)]
+            )
+            self.turbine_wake_losses_lt_wd = np.empty(
+                [self._num_sim, len(self._turbine_ids), int(360.0 / self._wd_bin_width_LT_corr)]
+            )
+
             self._wake_losses_vs_wdir_por = np.empty(
                 [self._num_sim, int(360.0 / self._wd_bin_width_LT_corr)]
             )
@@ -538,33 +662,39 @@ class WakeLosses(object):
             self._plant.scada.df.index <= self._end_date
         )
 
+        # include scada wind direction column only if using scada to determine mean wind direction for wind plant
+        if self._wind_direction_data_type == "scada":
+            scada_cols = ["id", "wmet_wdspd_avg", self._wind_direction_col, "wtur_W_avg"]
+        else:
+            scada_cols = ["id", "wmet_wdspd_avg", "wtur_W_avg"]
+
         self._aggregate_df = (
-            self._plant.scada.df.loc[
-                valid_times, ["id", "wmet_wdspd_avg", self._wind_direction_col, "wtur_W_avg"]
-            ]
+            self._plant.scada.df.loc[valid_times, scada_cols]
             .reset_index()
             .set_index(["time", "id"])
             .unstack()
         )
 
+        # Calculate reference mean wind direction
+        self._calculate_mean_wind_direction()
+
         # remove times with any missing turbine IDs or data
         # TODO: revisit because this may remove too many samples
         self._aggregate_df = self._aggregate_df.dropna(how="any")
-
-        # Calculate reference mean wind direction
-        self._calculate_mean_wind_direction()
 
         # Add reanalysis data to aggregate data frame
         self._include_reanal_data()
 
         # Drop turbine-level wind direction column
-        self._aggregate_df = self._aggregate_df.drop(columns=[self._wind_direction_col])
+        if self._wind_direction_data_type == "scada":
+            self._aggregate_df = self._aggregate_df.drop(columns=[self._wind_direction_col])
 
     @logged_method_call
     def _calculate_mean_wind_direction(self):
         """
-        Calculates the mean wind direction at each time step using the specified SCADA wind direction column for the
-        specified subset of turbines. This reference mean wind direction is added to the plant-level data frame.
+        Calculates the mean wind direction at each time step using the specified wind direction column for the
+        specified subset of turbines or met towers. This reference mean wind direction is added to the plant-level data
+        frame.
 
         Args:
             (None)
@@ -572,27 +702,32 @@ class WakeLosses(object):
             (None)
         """
 
-        self._aggregate_df["wmet_HorWdDir_ref"] = (
-            np.degrees(
-                np.arctan2(
-                    np.sin(
-                        np.radians(
-                            self._aggregate_df[self._wind_direction_col][
-                                self._wind_direction_turbine_ids
-                            ]
-                        )
-                    ).mean(axis=1),
-                    np.cos(
-                        np.radians(
-                            self._aggregate_df[self._wind_direction_col][
-                                self._wind_direction_turbine_ids
-                            ]
-                        )
-                    ).mean(axis=1),
+        def circular_average(x):
+            return (
+                np.degrees(
+                    np.arctan2(
+                        np.sin(np.radians(x)).mean(axis=1),
+                        np.cos(np.radians(x)).mean(axis=1),
+                    )
                 )
+                % 360.0
             )
-            % 360.0
-        )
+
+        if self._wind_direction_data_type == "scada":
+            self._aggregate_df["wmet_HorWdDir_ref"] = circular_average(
+                self._aggregate_df[self._wind_direction_col][self._wind_direction_asset_ids]
+            )
+        elif self._wind_direction_data_type == "tower":
+            df_tower = (
+                self._plant.tower.df[["id", self._wind_direction_col]]
+                .reset_index()
+                .set_index(["time", "id"])
+                .unstack()
+            )
+
+            self._aggregate_df["wmet_HorWdDir_ref"] = circular_average(
+                df_tower[self._wind_direction_col][self._wind_direction_asset_ids]
+            )
 
     @logged_method_call
     def _include_reanal_data(self):
@@ -693,8 +828,10 @@ class WakeLosses(object):
             (None)
 
         Returns:
-            (:obj:`float`, :obj:`numpy.ndarra`): The estimated long term-corrected wake losses and an array containing
-                the estimated turbine-level long term-corrected wake losses
+            (:obj:`float`, :obj:`numpy.ndarray`, :obj:`numpy.ndarray`, :obj:`numpy.ndarray`): The estimated long
+                term-corrected wake losses, an array containing the estimated turbine-level long term-corrected wake
+                losses, and arrays containing the long-term corrected plant and turbine-level wake losses binned by
+                wind direction
         """
 
         # TODO: make arguments?
@@ -810,9 +947,13 @@ class WakeLosses(object):
                 self._plant._turbine_capacity * 1e6
             )
 
+        df_1hr_bin["actual_plant_energy"] = df_1hr_bin["freq"] * df_1hr_bin["actual_plant_power"]
+        df_1hr_bin["potential_plant_energy"] = (
+            df_1hr_bin["freq"] * df_1hr_bin["potential_plant_power"]
+        )
+
         wake_losses_lt = 1 - (
-            (df_1hr_bin["freq"] * df_1hr_bin["actual_plant_power"]).sum()
-            / (df_1hr_bin["freq"] * df_1hr_bin["potential_plant_power"]).sum()
+            df_1hr_bin["actual_plant_energy"].sum() / df_1hr_bin["potential_plant_energy"].sum()
         )
 
         # Calculate long-term corrected turbine-level wake losses
@@ -821,52 +962,170 @@ class WakeLosses(object):
             # determine ideal turbine energy as sum of the power produced by the turbine when it is derated and the
             # mean power produced by all freestream turbines when the turbine is operating normally
 
-            turbine_wake_losses_lt[i] = 1 - (
-                (df_1hr_bin["freq"] * df_1hr_bin[("wtur_W_avg", t)]).sum()
-                / (df_1hr_bin["freq"] * df_1hr_bin[("potential_turbine_power", t)]).sum()
+            df_1hr_bin[("wtur_energy_avg", t)] = df_1hr_bin["freq"] * df_1hr_bin[("wtur_W_avg", t)]
+            df_1hr_bin[("potential_turbine_energy", t)] = (
+                df_1hr_bin["freq"] * df_1hr_bin[("potential_turbine_power", t)]
             )
 
-        # TODO: group wake losses by wind direction and return (for plant and turbine). First need to create actual and potential energy (product of freq and power), then groupby wind direction.
+            turbine_wake_losses_lt[i] = 1 - (
+                df_1hr_bin[("wtur_energy_avg", t)].sum()
+                / df_1hr_bin[("potential_turbine_energy", t)].sum()
+            )
+
+        # Save long-term corrected plant and turbine-level wake losses binned by wind direction
+        df_1hr_wd_bin = df_1hr_bin.groupby(level=[0]).sum()
+
+        wake_losses_lt_wd = (
+            df_1hr_wd_bin["actual_plant_energy"] / df_1hr_wd_bin["potential_plant_energy"]
+        ).values
+
+        turbine_wake_losses_lt_wd = np.empty(
+            [len(self._turbine_ids), int(360.0 / self._wd_bin_width_LT_corr)]
+        )
+        for i, t in enumerate(self._turbine_ids):
+            turbine_wake_losses_lt_wd[i, :] = (
+                df_1hr_wd_bin[("wtur_energy_avg", t)]
+                / df_1hr_wd_bin[("potential_turbine_energy", t)]
+            ).values
 
         # TODO: remove if this isn't needed later
         self.df_LT_bin[self._run.reanalysis_product] = df_1hr_bin
 
-        return wake_losses_lt, turbine_wake_losses_lt
+        return wake_losses_lt, turbine_wake_losses_lt, wake_losses_lt_wd, turbine_wake_losses_lt_wd
 
-    def plot_wake_losses_by_wind_direction(self, wd_bin_width=5.0):
+    def plot_wake_losses_by_wind_direction(self, turbine_id=None):
         """
         Plots wake losses during the period of record in the form of wind farm efficiency as a function of wind
         direction.
 
         Args:
-            wd_bin_width (:obj:`float`, optional): Wind diretion bin size for wind farm efficiency plot (degrees).
-                Defaults to 5 degrees.
+            turbine_id (:obj:`string`, optional): Turbine ID to plot wake losses for. If None, wake losses for the
+                entire wind plant will be plotted. Defaults to None.
         Returns:
             :obj:`matplotlib.pyplot.axes`: An axes object corresponding to the wake loss plot
         """
 
-        # TODO: update to plot POR and LT wake losses by direction with uncertainty in shaded region
+        # TODO: update to plot POR and LT wake losses by direction with uncertainty in shaded region. Don't need wd_bin_width anymore
 
         import matplotlib.pyplot as plt
 
-        df_sub = self._aggregate_df_sample[
-            ["wmet_HorWdDir_ref", "actual_plant_power", "potential_plant_power"]
-        ].copy()
+        color_codes = ["#4477AA", "#228833"]
 
-        # group wind farm efficiency by wind direction bin
-        df_sub["winddirection_bin"] = (
-            wd_bin_width * (df_sub["wmet_HorWdDir_ref"] / wd_bin_width).round()
-        )
-        df_sub.loc[df_sub["winddirection_bin"] == 360.0, "winddirection_bin"] = 0.0
-        df_sub_bin = df_sub.groupby("winddirection_bin").sum()
+        wd_bins = np.arange(0.0, 360.0, self._wd_bin_width_LT_corr)
 
         _, ax = plt.subplots(figsize=(9, 5))
-        ax.plot([0, 360.0 - wd_bin_width], [1, 1], "k", linewidth=1.5)
-        ax.plot(df_sub_bin["actual_plant_power"] / df_sub_bin["potential_plant_power"])
-        ax.set_xlim([0, 360.0 - wd_bin_width])
-        ax.set_xlabel(
-            "Wind Plant Average Wind Direction (deg)"
-        )  # TODO: replace with $^\circ$ and commit
+        ax.plot([0, 360.0 - self._wd_bin_width_LT_corr], [1, 1], "k", linewidth=1.5)
+
+        if self._UQ:
+            if turbine_id is None:  # plot wind plant wake losses
+                ax.plot(
+                    wd_bins,
+                    np.mean(self.wake_losses_por_wd, axis=0),
+                    color=color_codes[0],
+                    label="Period of Record",
+                )
+                ax.fill_between(
+                    wd_bins,
+                    np.percentile(self.wake_losses_por_wd, 2.5, axis=0),
+                    np.percentile(self.wake_losses_por_wd, 97.5, axis=0),
+                    alpha=0.2,
+                    color=color_codes[0],
+                    label="_nolegend_",
+                )
+
+                ax.plot(
+                    wd_bins,
+                    np.mean(self.wake_losses_lt_wd, axis=0),
+                    color=color_codes[1],
+                    label="Long-Term Corrected",
+                )
+                ax.fill_between(
+                    wd_bins,
+                    np.percentile(self.wake_losses_lt_wd, 2.5, axis=0),
+                    np.percentile(self.wake_losses_lt_wd, 97.5, axis=0),
+                    alpha=0.2,
+                    color=color_codes[1],
+                    label="_nolegend_",
+                )
+
+                ax.set_title(f"Wind Plant {self._plant._name}")
+            else:  # plot wake losses for specific turbine
+                turbine_index = self._turbine_ids.index(turbine_id)
+
+                ax.plot(
+                    wd_bins,
+                    np.mean(self.turbine_wake_losses_por_wd[:, turbine_index, :], axis=0),
+                    color=color_codes[0],
+                    label="Period of Record",
+                )
+                ax.fill_between(
+                    wd_bins,
+                    np.percentile(
+                        self.turbine_wake_losses_por_wd[:, turbine_index, :], 2.5, axis=0
+                    ),
+                    np.percentile(
+                        self.turbine_wake_losses_por_wd[:, turbine_index, :], 97.5, axis=0
+                    ),
+                    alpha=0.2,
+                    color=color_codes[0],
+                    label="_nolegend_",
+                )
+
+                ax.plot(
+                    wd_bins,
+                    np.mean(self.turbine_wake_losses_lt_wd[:, turbine_index, :], axis=0),
+                    color=color_codes[1],
+                    label="Long-Term Corrected",
+                )
+                ax.fill_between(
+                    wd_bins,
+                    np.percentile(self.turbine_wake_losses_lt_wd[:, turbine_index, :], 2.5, axis=0),
+                    np.percentile(
+                        self.turbine_wake_losses_lt_wd[:, turbine_index, :], 97.5, axis=0
+                    ),
+                    alpha=0.2,
+                    color=color_codes[1],
+                    label="_nolegend_",
+                )
+
+                ax.set_title(f"Wind Plant {self._plant._name}, Wind Turbine {turbine_id}")
+
+        else:  # without UQ
+            if turbine_id is None:  # plot wind plant wake losses
+                ax.plot(
+                    wd_bins, self.wake_losses_por_wd, color=color_codes[0], label="Period of Record"
+                )
+
+                ax.plot(
+                    wd_bins,
+                    self.wake_losses_lt_wd,
+                    color=color_codes[1],
+                    label="Long-Term Corrected",
+                )
+
+                ax.set_title(f"Wind Plant {self._plant._name}")
+            else:  # plot wake losses for specific turbine
+                turbine_index = self._turbine_ids.index(turbine_id)
+
+                ax.plot(
+                    wd_bins,
+                    self.turbine_wake_losses_por_wd[turbine_index, :],
+                    color=color_codes[0],
+                    label="Period of Record",
+                )
+
+                ax.plot(
+                    wd_bins,
+                    self.turbine_wake_losses_lt_wd[turbine_index, :],
+                    color=color_codes[1],
+                    label="Long-Term Corrected",
+                )
+
+                ax.set_title(f"Wind Plant {self._plant._name}, Wind Turbine {turbine_id}")
+
+        ax.set_xlim([0, 360.0 - self._wd_bin_width_LT_corr])
+        ax.set_xlabel("Wind Plant Average Wind Direction ($^\circ$)")
+        ax.legend()
         ax.set_ylabel("Wind Plant Efficiency (-)")
         ax.grid()
 
