@@ -244,9 +244,6 @@ class WakeLosses(object):
         # Set up Monte Carlo simulation inputs if UQ = True or single simulation inputs if UQ = False.
         self._setup_monte_carlo_inputs()
 
-        # TODO: temp for plotting, remove afterwards
-        self.df_LT_bin = {}
-
         for n in tqdm(range(self._num_sim)):
 
             # TODO: temp, remove after debugging
@@ -485,13 +482,25 @@ class WakeLosses(object):
                     wake_losses_lt_wd,
                     turbine_wake_losses_lt_wd,
                     energy_lt_wd,
-                ) = self._apply_LT_correction()  # , wake_losses_lt_wd
+                    wake_losses_por_ws,
+                    turbine_wake_losses_por_ws,
+                    energy_por_ws,
+                    wake_losses_lt_ws,
+                    turbine_wake_losses_lt_ws,
+                    energy_lt_ws,
+                ) = self._apply_LT_correction()
 
                 self.wake_losses_lt[n] = wake_losses_lt
                 self.turbine_wake_losses_lt[n, :] = turbine_wake_losses_lt
                 self.wake_losses_lt_wd[n, :] = wake_losses_lt_wd
                 self.turbine_wake_losses_lt_wd[n, :, :] = turbine_wake_losses_lt_wd
                 self.energy_lt_wd[n, :] = energy_lt_wd
+                self.wake_losses_por_ws[n, :] = wake_losses_por_ws
+                self.turbine_wake_losses_por_ws[n, :, :] = turbine_wake_losses_por_ws
+                self.energy_por_ws[n, :] = energy_por_ws
+                self.wake_losses_lt_ws[n, :] = wake_losses_lt_ws
+                self.turbine_wake_losses_lt_ws[n, :, :] = turbine_wake_losses_lt_ws
+                self.energy_lt_ws[n, :] = energy_lt_ws
 
         if not self._UQ:
             # apply long-term correction to wake losses and average results over all reanalysis products
@@ -522,6 +531,34 @@ class WakeLosses(object):
                 [len(self._reanal_products), int(360.0 / self._wd_bin_width_LT_corr)]
             )
 
+            wake_losses_por_ws_all_products = np.empty(
+                [len(self._reanal_products), int(30.0 / self._ws_bin_width_LT_corr) + 1]
+            )
+            turbine_wake_losses_por_ws_all_products = np.empty(
+                [
+                    len(self._reanal_products),
+                    len(self._turbine_ids),
+                    int(30.0 / self._ws_bin_width_LT_corr) + 1,
+                ]
+            )
+            energy_por_ws_all_products = np.empty(
+                [len(self._reanal_products), int(30.0 / self._ws_bin_width_LT_corr) + 1]
+            )
+
+            wake_losses_lt_ws_all_products = np.empty(
+                [len(self._reanal_products), int(30.0 / self._ws_bin_width_LT_corr) + 1]
+            )
+            turbine_wake_losses_lt_ws_all_products = np.empty(
+                [
+                    len(self._reanal_products),
+                    len(self._turbine_ids),
+                    int(30.0 / self._ws_bin_width_LT_corr) + 1,
+                ]
+            )
+            energy_lt_ws_all_products = np.empty(
+                [len(self._reanal_products), int(30.0 / self._ws_bin_width_LT_corr) + 1]
+            )
+
             for i_rean, product in enumerate(self._reanal_products):
                 self._run.reanalysis_product = product
 
@@ -531,6 +568,12 @@ class WakeLosses(object):
                     wake_losses_lt_wd,
                     turbine_wake_losses_lt_wd,
                     energy_lt_wd,
+                    wake_losses_por_ws,
+                    turbine_wake_losses_por_ws,
+                    energy_por_ws,
+                    wake_losses_lt_ws,
+                    turbine_wake_losses_lt_ws,
+                    energy_lt_ws,
                 ) = self._apply_LT_correction()
 
                 wake_losses_lt_all_products[i_rean] = wake_losses_lt
@@ -541,12 +584,32 @@ class WakeLosses(object):
 
                 energy_lt_wd_all_products[i_rean] = energy_lt_wd
 
+                wake_losses_por_ws_all_products[i_rean] = wake_losses_por_ws
+                turbine_wake_losses_por_ws_all_products[i_rean] = turbine_wake_losses_por_ws
+
+                energy_por_ws_all_products[i_rean] = energy_por_ws
+
+                wake_losses_lt_ws_all_products[i_rean] = wake_losses_lt_ws
+                turbine_wake_losses_lt_ws_all_products[i_rean] = turbine_wake_losses_lt_ws
+
+                energy_lt_ws_all_products[i_rean] = energy_lt_ws
+
             self.wake_losses_lt = np.mean(wake_losses_lt_all_products)
             self.turbine_wake_losses_lt = np.mean(turbine_wake_losses_lt_all_products, axis=0)
 
             self.wake_losses_lt_wd = np.mean(wake_losses_lt_wd_all_products, axis=0)
             self.turbine_wake_losses_lt_wd = np.mean(turbine_wake_losses_lt_wd_all_products, axis=0)
             self.energy_lt_wd = np.mean(energy_lt_wd_all_products, axis=0)
+
+            self.wake_losses_por_ws = np.mean(wake_losses_por_ws_all_products, axis=0)
+            self.turbine_wake_losses_por_ws = np.mean(
+                turbine_wake_losses_por_ws_all_products, axis=0
+            )
+            self.energy_por_ws = np.mean(energy_por_ws_all_products, axis=0)
+
+            self.wake_losses_lt_ws = np.mean(wake_losses_lt_ws_all_products, axis=0)
+            self.turbine_wake_losses_lt_ws = np.mean(turbine_wake_losses_lt_ws_all_products, axis=0)
+            self.energy_lt_ws = np.mean(energy_lt_ws_all_products, axis=0)
 
         else:
             # Calculate mean and standard deviation of wake losses from Monte Carlo simulations
@@ -622,6 +685,27 @@ class WakeLosses(object):
 
             self.energy_por_wd = np.empty([self._num_sim, int(360.0 / self._wd_bin_width_LT_corr)])
             self.energy_lt_wd = np.empty([self._num_sim, int(360.0 / self._wd_bin_width_LT_corr)])
+
+            # For saving wake losses and energy production binned by wind speed
+            self.wake_losses_por_ws = np.empty(
+                [self._num_sim, int(30.0 / self._ws_bin_width_LT_corr) + 1]
+            )
+            self.turbine_wake_losses_por_ws = np.empty(
+                [self._num_sim, len(self._turbine_ids), int(30.0 / self._ws_bin_width_LT_corr) + 1]
+            )
+            self.wake_losses_lt_ws = np.empty(
+                [self._num_sim, int(30.0 / self._ws_bin_width_LT_corr) + 1]
+            )
+            self.turbine_wake_losses_lt_ws = np.empty(
+                [self._num_sim, len(self._turbine_ids), int(30.0 / self._ws_bin_width_LT_corr) + 1]
+            )
+
+            self.energy_por_ws = np.empty(
+                [self._num_sim, int(30.0 / self._ws_bin_width_LT_corr) + 1]
+            )
+            self.energy_lt_ws = np.empty(
+                [self._num_sim, int(30.0 / self._ws_bin_width_LT_corr) + 1]
+            )
 
         elif not self._UQ:
             inputs = {
@@ -867,9 +951,6 @@ class WakeLosses(object):
             df_1hr["wmet_wdspd_mean_freestream"].values.reshape(-1, 1)
         )
 
-        # TODO: remove, temp for debugging
-        self.df_1hr = df_1hr
-
         # Create data frame with long-term frequencies of wind direction and wind speed bins from reanalysis data
         df_reanal_freqs = pd.DataFrame()
 
@@ -912,6 +993,41 @@ class WakeLosses(object):
         )
         df_1hr.loc[df_1hr["winddirection_deg_bin"] == 360.0, "winddirection_deg_bin"] = 0.0
 
+        # First, compute POR wake losses as a function of wind speed
+        df_1hr_ws_por_bin = (
+            df_1hr.groupby(("windspeed_ms_bin", ""))
+            .sum()
+            .rename(
+                columns={
+                    ("potential_plant_power", ""): "potential_plant_power",
+                    ("actual_plant_power", ""): "actual_plant_power",
+                }
+            )
+        )
+
+        # reindex to fill in missing wind speed bins
+        index = np.arange(0.0, 31.0, self._ws_bin_width_LT_corr).tolist()
+        df_1hr_ws_por_bin = df_1hr_ws_por_bin.reindex(index)
+
+        wake_losses_por_ws = (
+            df_1hr_ws_por_bin["actual_plant_power"] / df_1hr_ws_por_bin["potential_plant_power"]
+        ).values
+
+        energy_por_ws = (
+            df_1hr_ws_por_bin["actual_plant_power"].values
+            / df_1hr_ws_por_bin["actual_plant_power"].sum()
+        )
+
+        turbine_wake_losses_por_ws = np.empty(
+            [len(self._turbine_ids), int(30.0 / self._ws_bin_width_LT_corr) + 1]
+        )
+        for i, t in enumerate(self._turbine_ids):
+            turbine_wake_losses_por_ws[i, :] = (
+                df_1hr_ws_por_bin[("wtur_W_avg", t)]
+                / df_1hr_ws_por_bin[("potential_turbine_power", t)]
+            ).values
+
+        # Bin variables by wind direction and wind speed
         df_1hr_bin = df_1hr.groupby(
             [("winddirection_deg_bin", ""), ("windspeed_ms_bin", "")]
         ).mean()
@@ -985,8 +1101,29 @@ class WakeLosses(object):
                 / df_1hr_wd_bin[("potential_turbine_energy", t)]
             ).values
 
-        # TODO: remove if this isn't needed later
-        self.df_LT_bin[self._run.reanalysis_product] = df_1hr_bin
+        # Save long-term corrected plant and turbine-level wake losses binned by wind speed
+        df_1hr_ws_bin = df_1hr_bin.groupby(level=[1]).sum()
+
+        # reindex to fill in missing wind speed bins
+        index = np.arange(0.0, 31.0, self._ws_bin_width_LT_corr).tolist()
+        df_1hr_ws_bin = df_1hr_ws_bin.reindex(index)
+
+        wake_losses_lt_ws = (
+            df_1hr_ws_bin["actual_plant_energy"] / df_1hr_ws_bin["potential_plant_energy"]
+        ).values
+
+        energy_lt_ws = (
+            df_1hr_ws_bin["actual_plant_energy"].values / df_1hr_ws_bin["actual_plant_energy"].sum()
+        )
+
+        turbine_wake_losses_lt_ws = np.empty(
+            [len(self._turbine_ids), int(30.0 / self._ws_bin_width_LT_corr) + 1]
+        )
+        for i, t in enumerate(self._turbine_ids):
+            turbine_wake_losses_lt_ws[i, :] = (
+                df_1hr_ws_bin[("wtur_energy_avg", t)]
+                / df_1hr_ws_bin[("potential_turbine_energy", t)]
+            ).values
 
         return (
             wake_losses_lt,
@@ -994,6 +1131,12 @@ class WakeLosses(object):
             wake_losses_lt_wd,
             turbine_wake_losses_lt_wd,
             energy_lt_wd,
+            wake_losses_por_ws,
+            turbine_wake_losses_por_ws,
+            energy_por_ws,
+            wake_losses_lt_ws,
+            turbine_wake_losses_lt_ws,
+            energy_lt_ws,
         )
 
     def plot_wake_losses_by_wind_direction(self, plot_norm_energy=True, turbine_id=None):
@@ -1177,6 +1320,215 @@ class WakeLosses(object):
 
         axs[0].set_xlim([0, 360.0 - self._wd_bin_width_LT_corr])
         axs[len(axs) - 1].set_xlabel("Wind Plant Average Wind Direction ($^\circ$)")
+        axs[0].legend()
+        axs[0].set_ylabel("Wind Plant Efficiency (-)")
+        axs[0].grid()
+
+        if plot_norm_energy:
+            axs[1].legend()
+            axs[1].set_ylabel("Normalized Wind Plant\nEnergy Production (-)")
+            axs[1].grid()
+
+            plt.tight_layout()
+
+            return axs
+        else:
+            return ax
+
+    def plot_wake_losses_by_wind_speed(self, plot_norm_energy=True, turbine_id=None):
+        """
+        Plots wake losses during the period of record in the form of wind farm efficiency as a function of wind
+        speed as well as normalized wind plant energy production as a function of wind speee.
+
+        Args:
+            plot_norm_energy (:obj:`bool`, optional): If True, include a plot of normalized wind plant energy
+                production as a function of wind speed in addition to the wind farm efficiency plot. Defaults to
+                True.
+            turbine_id (:obj:`string`, optional): Turbine ID to plot wake losses for. If None, wake losses for the
+                entire wind plant will be plotted. Defaults to None.
+        Returns:
+            :obj:`matplotlib.pyplot.axes`: An axes object or array of two axes corresponding to the wake loss plot or
+                wake loss and normalized energy plots
+        """
+
+        import matplotlib.pyplot as plt
+
+        color_codes = ["#4477AA", "#228833"]
+
+        # Limit to 4 - 20 m/s. Customize this later?
+        ws_min = 4.0
+        ws_max = 20.0
+        ws_bins_orig = np.arange(0.0, 31.0, self._ws_bin_width_LT_corr)
+        ws_bins = np.arange(ws_min, ws_max + 1, self._ws_bin_width_LT_corr)
+        mask = (ws_bins_orig >= ws_min) & (ws_bins_orig <= ws_max)
+
+        if plot_norm_energy:
+            _, axs = plt.subplots(2, 1, figsize=(9, 9.1), sharex=True)
+        else:
+            _, ax = plt.subplots(figsize=(9, 5))
+            axs = [ax]
+        axs[0].plot([ws_min, ws_max], [1, 1], "k", linewidth=1.5)
+
+        if self._UQ:
+            if turbine_id is None:  # plot wind plant wake losses
+                axs[0].plot(
+                    ws_bins,
+                    np.mean(self.wake_losses_por_ws[:, mask], axis=0),
+                    color=color_codes[0],
+                    label="Period of Record",
+                )
+                axs[0].fill_between(
+                    ws_bins,
+                    np.percentile(self.wake_losses_por_ws[:, mask], 2.5, axis=0),
+                    np.percentile(self.wake_losses_por_ws[:, mask], 97.5, axis=0),
+                    alpha=0.2,
+                    color=color_codes[0],
+                    label="_nolegend_",
+                )
+
+                axs[0].plot(
+                    ws_bins,
+                    np.mean(self.wake_losses_lt_ws[:, mask], axis=0),
+                    color=color_codes[1],
+                    label="Long-Term Corrected",
+                )
+                axs[0].fill_between(
+                    ws_bins,
+                    np.percentile(self.wake_losses_lt_ws[:, mask], 2.5, axis=0),
+                    np.percentile(self.wake_losses_lt_ws[:, mask], 97.5, axis=0),
+                    alpha=0.2,
+                    color=color_codes[1],
+                    label="_nolegend_",
+                )
+
+                axs[0].set_title(f"Wind Plant {self._plant._name}")
+            else:  # plot wake losses for specific turbine
+                turbine_index = self._turbine_ids.index(turbine_id)
+
+                axs[0].plot(
+                    ws_bins,
+                    np.mean(self.turbine_wake_losses_por_ws[:, turbine_index, mask], axis=0),
+                    color=color_codes[0],
+                    label="Period of Record",
+                )
+                axs[0].fill_between(
+                    ws_bins,
+                    np.percentile(
+                        self.turbine_wake_losses_por_ws[:, turbine_index, mask], 2.5, axis=0
+                    ),
+                    np.percentile(
+                        self.turbine_wake_losses_por_ws[:, turbine_index, mask], 97.5, axis=0
+                    ),
+                    alpha=0.2,
+                    color=color_codes[0],
+                    label="_nolegend_",
+                )
+
+                axs[0].plot(
+                    ws_bins,
+                    np.mean(self.turbine_wake_losses_lt_ws[:, turbine_index, mask], axis=0),
+                    color=color_codes[1],
+                    label="Long-Term Corrected",
+                )
+                axs[0].fill_between(
+                    ws_bins,
+                    np.percentile(
+                        self.turbine_wake_losses_lt_ws[:, turbine_index, mask], 2.5, axis=0
+                    ),
+                    np.percentile(
+                        self.turbine_wake_losses_lt_ws[:, turbine_index, mask], 97.5, axis=0
+                    ),
+                    alpha=0.2,
+                    color=color_codes[1],
+                    label="_nolegend_",
+                )
+
+                axs[0].set_title(f"Wind Plant {self._plant._name}, Wind Turbine {turbine_id}")
+
+            if plot_norm_energy:
+                axs[1].plot(
+                    ws_bins,
+                    np.mean(self.energy_por_ws[:, mask], axis=0),
+                    color=color_codes[0],
+                    label="Period of Record",
+                )
+                axs[1].fill_between(
+                    ws_bins,
+                    np.percentile(self.energy_por_ws[:, mask], 2.5, axis=0),
+                    np.percentile(self.energy_por_ws[:, mask], 97.5, axis=0),
+                    alpha=0.2,
+                    color=color_codes[0],
+                    label="_nolegend_",
+                )
+
+                axs[1].plot(
+                    ws_bins,
+                    np.mean(self.energy_lt_ws[:, mask], axis=0),
+                    color=color_codes[1],
+                    label="Long-Term Corrected",
+                )
+                axs[1].fill_between(
+                    ws_bins,
+                    np.percentile(self.energy_lt_ws[:, mask], 2.5, axis=0),
+                    np.percentile(self.energy_lt_ws[:, mask], 97.5, axis=0),
+                    alpha=0.2,
+                    color=color_codes[1],
+                    label="_nolegend_",
+                )
+
+        else:  # without UQ
+            if turbine_id is None:  # plot wind plant wake losses
+                axs[0].plot(
+                    ws_bins,
+                    self.wake_losses_por_ws[mask],
+                    color=color_codes[0],
+                    label="Period of Record",
+                )
+
+                axs[0].plot(
+                    ws_bins,
+                    self.wake_losses_lt_ws[mask],
+                    color=color_codes[1],
+                    label="Long-Term Corrected",
+                )
+
+                axs[0].set_title(f"Wind Plant {self._plant._name}")
+            else:  # plot wake losses for specific turbine
+                turbine_index = self._turbine_ids.index(turbine_id)
+
+                axs[0].plot(
+                    ws_bins,
+                    self.turbine_wake_losses_por_ws[turbine_index, mask],
+                    color=color_codes[0],
+                    label="Period of Record",
+                )
+
+                axs[0].plot(
+                    ws_bins,
+                    self.turbine_wake_losses_lt_ws[turbine_index, mask],
+                    color=color_codes[1],
+                    label="Long-Term Corrected",
+                )
+
+                axs[0].set_title(f"Wind Plant {self._plant._name}, Wind Turbine {turbine_id}")
+
+            if plot_norm_energy:
+                axs[1].plot(
+                    ws_bins,
+                    self.energy_por_ws[mask],
+                    color=color_codes[0],
+                    label="Period of Record",
+                )
+
+                axs[1].plot(
+                    ws_bins,
+                    self.energy_lt_ws[mask],
+                    color=color_codes[1],
+                    label="Long-Term Corrected",
+                )
+
+        axs[0].set_xlim([ws_min, ws_max])
+        axs[len(axs) - 1].set_xlabel("Freestream Wind Speed (m/s)")
         axs[0].legend()
         axs[0].set_ylabel("Wind Plant Efficiency (-)")
         axs[0].grid()
