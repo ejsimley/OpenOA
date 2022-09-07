@@ -118,6 +118,7 @@ class WakeLosses(object):
         wd_bin_width=5.0,
         freestream_sector_width=None,
         freestream_power_method="mean",
+        freestream_wind_speed_method="mean",
         correct_for_derating=True,
         derating_filter_wind_speed_start=None,
         max_power_filter=None,
@@ -149,6 +150,8 @@ class WakeLosses(object):
                 110) will be used if UQ = True. Defaults to None.
             freestream_power_method (:obj:`string`, optional): Method used to determine the representative power
                 prouction of the freestream turbines ("mean", "median", "max"). Defaults to "mean".
+            freestream_wind_speed_method (:obj:`string`, optional): Method used to determine the representative wind
+                speed of the freestream turbines ("mean", "median"). Defaults to "mean".
             correct_for_derating (:obj:`bool`, optional): Indicates whether derated, curtailed, or otherwise
                 unavailable turbines should be flagged and excluded from the calculation of ideal freestream wind plant
                 power production for a given time stamp. If True, ideal freestream power production will be calculated
@@ -246,9 +249,6 @@ class WakeLosses(object):
 
         for n in tqdm(range(self._num_sim)):
 
-            # TODO: temp, remove after debugging
-            # start_time = time.time()
-
             self._run = self._inputs.loc[n]
 
             # Estimate periods when each turbine is unavailable, derated, or curtailed, based on power curve filtering
@@ -264,20 +264,26 @@ class WakeLosses(object):
             else:
                 self._aggregate_df_sample = self._aggregate_df.copy()
 
-            # For a set of wind direction bins, identify freestream turbines and calculate mean energy production
+            # For a set of wind direction bins, identify freestream turbines and calculate mean energy production and
+            # wind speed
             self._aggregate_df_sample["wtur_W_mean_freestream"] = np.nan
+            self._aggregate_df_sample["wmet_wdspd_mean_freestream"] = np.nan
 
             wd_bins = np.arange(0.0, 360.0, wd_bin_width)
 
-            for t in self._turbine_ids:
-                self._aggregate_df_sample.loc[
-                    ~self._aggregate_df_sample[("derate_flag", t)], ("wtur_W_avg_normal", t)
-                ] = self._aggregate_df_sample.loc[
-                    ~self._aggregate_df_sample[("derate_flag", t)], ("wtur_W_avg", t)
-                ]
+            # Create columns for turbine power and wind speed during normal operation (NaN otherwise)
 
-            # TODO: temp, remove after debugging
-            # print("--- Starting wind direction loop %s seconds ---" % (time.time() - start_time))
+            for t in self._turbine_ids:
+                valid_inds = ~self._aggregate_df_sample[("derate_flag", t)]
+                self._aggregate_df_sample.loc[
+                    valid_inds, ("wtur_W_avg_normal", t)
+                ] = self._aggregate_df_sample.loc[valid_inds, ("wtur_W_avg", t)]
+
+            for t in self._turbine_ids:
+                valid_inds = ~self._aggregate_df_sample[("derate_flag", t)]
+                self._aggregate_df_sample.loc[
+                    valid_inds, ("wmet_wdspd_avg_normal", t)
+                ] = self._aggregate_df_sample.loc[valid_inds, ("wmet_wdspd_avg", t)]
 
             # Find freestream turbines for each wind direction. Update the dictionary only when the set of turbines
             # differs from the previous wind direction bin.
@@ -298,11 +304,6 @@ class WakeLosses(object):
 
             if freestream_turbine_dict[0.0] == list(freestream_turbine_dict.values())[-1]:
                 freestream_turbine_dict.pop(0.0)
-
-            # TODO: remove after testing
-            # for wd in list(freestream_turbine_dict.keys()):
-            #     print(wd)
-            #     print(freestream_turbine_dict[wd])
 
             # Find freestream energy production for each wind direction sector containing the same freestream turbines
 
@@ -366,24 +367,19 @@ class WakeLosses(object):
                         self._aggregate_df_sample.loc[wd_bin_flag, "wtur_W_avg_normal"]
                     )[freestream_turbine_ids].max(axis=1)
 
-                self._aggregate_df_sample.loc[wd_bin_flag, "wmet_wdspd_mean_freestream"] = (
-                    self._aggregate_df_sample.loc[wd_bin_flag, "wmet_wdspd_avg"]
-                    * ~self._aggregate_df_sample.loc[wd_bin_flag, "derate_flag"]
-                )[freestream_turbine_ids].sum(axis=1) / (
-                    ~self._aggregate_df_sample.loc[wd_bin_flag, "derate_flag"]
-                )[
-                    freestream_turbine_ids
-                ].sum(
-                    axis=1
-                )
+                if freestream_wind_speed_method == "mean":
+                    self._aggregate_df_sample.loc[wd_bin_flag, "wmet_wdspd_mean_freestream"] = (
+                        self._aggregate_df_sample.loc[wd_bin_flag, "wmet_wdspd_avg_normal"]
+                    )[freestream_turbine_ids].mean(axis=1)
+                elif freestream_wind_speed_method == "median":
+                    self._aggregate_df_sample.loc[wd_bin_flag, "wmet_wdspd_mean_freestream"] = (
+                        self._aggregate_df_sample.loc[wd_bin_flag, "wmet_wdspd_avg_normal"]
+                    )[freestream_turbine_ids].median(axis=1)
 
             # Remove rows where no freestream turbines in normal operation were identified
             self._aggregate_df_sample = self._aggregate_df_sample.dropna(
-                subset=[("wtur_W_mean_freestream", "")]
+                subset=[("wtur_W_mean_freestream", ""), ("wmet_wdspd_mean_freestream", "")]
             )
-
-            # TODO: temp, remove after debugging
-            # print("--- Finished wind direction loop %s seconds ---" % (time.time() - start_time))
 
             # calculate total plant-level wake losses during period of record
 
