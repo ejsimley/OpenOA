@@ -6,7 +6,6 @@
 # estimate wake losses during the period of record. Methods for calclating the long-term
 # wake losses using reanalaysis data and quantifying uncertaitny are provided as well.
 
-import time  # TODO: temp remove after debugging
 import random
 
 import numpy as np
@@ -754,7 +753,6 @@ class WakeLosses(object):
         self._calculate_mean_wind_direction()
 
         # remove times with any missing turbine IDs or data
-        # TODO: revisit because this may remove too many samples
         self._aggregate_df = self._aggregate_df.dropna(how="any")
 
         # Add reanalysis data to aggregate data frame
@@ -864,15 +862,6 @@ class WakeLosses(object):
                 value_min=0.01 * turb_capac,
                 value_max=1.2 * turb_capac,
             )
-
-            # # TODO: remove, adding temporarily because of prominent derating
-            # flag_window2 = (
-            #                 (self._aggregate_df[("wmet_wdspd_avg", t)] >= 11.25) &
-            #                 (self._aggregate_df[("wtur_W_avg", t)] >= 1.65e6) &
-            #                 (self._aggregate_df[("wtur_W_avg", t)] <= 1.75e6)
-            #             )
-
-            # flag_window = flag_window | flag_window2
 
             # Apply bin-based filter to flag samples for which wind speed is greater than a threshold from the median
             # wind speed in each power bin
