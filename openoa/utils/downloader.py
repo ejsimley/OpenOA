@@ -332,6 +332,136 @@ def get_era5_monthly(
     return df
 
 
+def get_era5_hourly(asset="penmanshiel",lat=55.864,lon=-2.352,start_year=2000):
+    """
+    Get ERA5 data directly from the CDS service
+    This requires registration on the CDS service
+    See: https://cds.climate.copernicus.eu/api-how-to
+
+    Monthly 10m height data is demonstrated here,
+    as hourly data takes too long to download, but could be amended
+    and other CDS datasets also used (e.g. CERRA for Europe)
+
+    Args:
+        asset (str): name of the asset.
+        lat (float): latitude of the asset as decimal degrees
+        lon (float): longitude of the asset as decimal degrees
+
+    Returns:
+        NetCDF annual ERA5 files saved to the asset data folder
+        ERA5 csv file saved to the asset data folder
+    """
+
+    logger.info("Please note access to ERA5 data requires registration")
+    logger.info("Please see: https://cds.climate.copernicus.eu/api-how-to")
+
+    # set up cds-api client
+    try:
+        c = cdsapi.Client()
+    except Exception as e:
+        logger.error('Failed to make connection to cds: '+ str(e))
+        logger.error('Please see: https://cds.climate.copernicus.eu/api-how-to')
+        raise NameError(e)
+
+    # the data is stored with the asset data
+    outfile_path = r"data//"+asset+"/era5_hourly//"
+
+    # create outfile_path if it does not exist
+    if not os.path.exists(outfile_path):
+        os.makedirs(outfile_path)
+
+
+    now = datetime.datetime.now()
+    years = list(range(start_year,now.year+1,1))
+
+    # get the data for the closest 3 nodes to the coordinates
+    node_spacing = 0.250500001*1
+
+    # download the data
+    for year in years:
+
+        outfile = outfile_path+asset+"_ERA5_hourly_"+str(year)+".nc"
+
+        if year == now.year:
+            months = list(range(1,now.month-1,1))
+        else:
+            months = list(range(1,12+1,1))
+
+        # See: https://cds.climate.copernicus.eu/cdsapp#!/dataset/reanalysis-era5-single-levels-monthly-means?tab=form
+        # for formulating other requests from cds
+        if not os.path.exists(outfile) or year==now.year:
+
+            logger.info("Downloading ERA5 :" + outfile)
+
+            c.retrieve(
+                "reanalysis-era5-single-levels",
+                {
+                    "product_type": "reanalysis",
+                    "format": "netcdf",
+                    "variable": [
+                        "100m_u_component_of_wind", "100m_v_component_of_wind", "2m_temperature", "surface_pressure",
+                    ],
+                    "year": year,
+                    "month": months,
+                    'day': [
+                        '01', '02', '03',
+                        '04', '05', '06',
+                        '07', '08', '09',
+                        '10', '11', '12',
+                        '13', '14', '15',
+                        '16', '17', '18',
+                        '19', '20', '21',
+                        '22', '23', '24',
+                        '25', '26', '27',
+                        '28', '29', '30',
+                        '31',
+                    ],
+                    'time': [
+                        '00:00', '01:00', '02:00',
+                        '03:00', '04:00', '05:00',
+                        '06:00', '07:00', '08:00',
+                        '09:00', '10:00', '11:00',
+                        '12:00', '13:00', '14:00',
+                        '15:00', '16:00', '17:00',
+                        '18:00', '19:00', '20:00',
+                        '21:00', '22:00', '23:00',
+                    ],
+                    "product_type": "reanalysis",
+                    "area": [
+                        lat+node_spacing, lon-node_spacing, 
+                        lat-node_spacing, lon+node_spacing,
+                    ],
+                },
+                outfile)
+    
+    # get the saved data
+    ds_nc = xr.open_mfdataset(outfile_path+asset+"_ERA5_hourly_"+"*.nc")
+
+    # renamce variables to conform with OpenOA
+    ds_nc = ds_nc.rename_vars({"u100":"u_ms","v100":"v_ms","t2m":"temperature_K","sp":"surf_pres_Pa"})
+    
+    # select the central node only for now
+    if 'expver' in ds_nc.dims:
+        sel = ds_nc.sel(expver=1,latitude=lat,longitude=lon, method="nearest")
+    else:
+        sel = ds_nc.sel(latitude=lat,longitude=lon, method="nearest")   
+
+    # convert to a pandas dataframe
+    df = sel.to_dataframe()
+    
+    # select required columns
+    df = df[["u_ms","v_ms","temperature_K","surf_pres_Pa"]]
+
+    # rename the index to match other datasets
+    df.index.name = "datetime"
+
+    # drop any empty rows
+    df = df.dropna()
+    
+    # export to csv for easy loading next time
+    df.to_csv("data//"+asset+"//"+asset+"_era5_hourly_10m.csv")
+
+
 def get_merra2_monthly(
     lat: float,
     lon: float,
@@ -481,3 +611,115 @@ def get_merra2_monthly(
     df.to_csv(save_pathname / f"{save_filename}.csv", index=True)
 
     return df
+
+
+def get_merra2_hourly(asset="penmanshiel",lat=55.864,lon=-2.352,start_year=2000):
+    """
+    Get MERRA2 data directly from the NASA GES DISC service
+    This requires registration on the GES DISC service
+    See: https://disc.gsfc.nasa.gov/information/howto?title=How%20to%20Generate%20Earthdata%20Prerequisite%20Files
+
+    Monthly 10m height data is demonstrated here,
+    as hourly data takes too long to download, but could be amended
+    and other GES DISC datasets also used (e.g. FLDAS)
+
+    Args:
+        asset (str): name of the asset.
+        lat (float): latitude of the asset as decimal degrees
+        lon (float): longitude of the asset as decimal degrees
+
+    Returns:
+        NetCDF monthly MERRA-2 files saved to the data folder
+        MERRA-2 csv file saved to the asset data folder
+    """
+    
+    logger.info("Please note access to MERRA2 data requires registration")
+    logger.info("Please see: https://disc.gsfc.nasa.gov/information/howto?title=How%20to%20Generate%20Earthdata%20Prerequisite%20Files")
+
+    # base url containing the monthly data set M2IMNXLFO
+    base_url = r"https://goldsmr4.gesdisc.eosdis.nasa.gov/opendap/MERRA2/M2T1NXSLV.5.12.4/"
+
+    # the merra2 asset data is stored with the asset data
+    outfile_path = r"data//"+asset+"//MERRA2_hourly//"
+    
+    # create outfile_path if it does not exist
+    if not os.path.exists(outfile_path):
+        os.makedirs(outfile_path)
+
+
+    now = datetime.datetime.now()
+    years = list(range(start_year,now.year+1,1))
+
+    
+    
+    # download the data
+    for year in years:
+        
+        if year == now.year:
+            months = list(range(1,now.month-1,1))
+        else:
+            months = list(range(1,12+1,1))
+
+        for month in months:
+
+            # get the file names from the GES DISC site for the year
+            result = requests.get(base_url+str(year)+"/%02d" % month)
+            files = re.findall(r"(>MERRA2_\S+.nc4)", result.text)
+            files = list(dict.fromkeys(files))
+            files = [x[1:] for x in files]
+            
+            
+            # coordinate indexes
+            lat_i = ""
+            lon_i = ""
+            
+            # download each of the files and save them
+            for file in files:
+                
+                outfile = outfile_path+"/MERRA2_hourly_"+file.split(".")[-2]+".nc"
+
+                if not os.path.isfile(outfile):
+
+                    # download one file for determining coordinate indicies
+                    if lat_i=="":
+                        url = base_url+str(year)+"/%02d" % month+"//"+file+r".nc4?PS,U50M,V50M,T2M,time,lat,lon"
+                        download_file(url,outfile)
+                        ds_nc = xr.open_dataset(outfile)
+                        ds_nc_idx = ds_nc.assign_coords(lon_idx=("lon",range(ds_nc.dims['lon'])),lat_idx=("lat",range(ds_nc.dims['lat'])))
+                        sel = ds_nc_idx.sel(lat=lat,lon=lon, method="nearest")
+                        lon_i = "["+str(sel.lon_idx.values-1)+":"+str(sel.lon_idx.values+1)+"]"
+                        lat_i = "["+str(sel.lat_idx.values-1)+":"+str(sel.lat_idx.values+1)+"]"
+                        ds_nc.close()
+                        os.remove(outfile) 
+                        
+                        
+                    url = base_url+str(year)+"/%02d" % month+"//"+file+r".nc4?PS[0:23]"+lat_i+lon_i+",U50M[0:23]"+lat_i+lon_i+",V50M[0:23]"+lat_i+lon_i+",T2M[0:23]"+lat_i+lon_i+",time,lat"+lat_i+",lon"+lon_i
+                    
+                    download_file(url,outfile)
+                
+
+                            
+                    
+    # get the saved data
+    ds_nc = xr.open_mfdataset(outfile_path+"MERRA2_hourly_"+"*.nc")
+
+    # renamce variables to conform with OpenOA
+    ds_nc = ds_nc.rename_vars({"U50M":"u_ms","V50M":"v_ms","T2M":"temperature_K","PS":"surf_pres_Pa"})
+    
+    # select the central node only for now
+    sel = ds_nc.sel(lat=lat,lon=lon, method="nearest")   
+
+    # convert to a pandas dataframe
+    df = sel.to_dataframe()
+
+    # select required columns
+    df = df[["u_ms","v_ms","temperature_K","surf_pres_Pa"]]
+
+    # rename the index to match other datasets
+    df.index.name = "datetime"
+
+    # drop any empty rows
+    df = df.dropna()
+    
+    # export to csv for easy loading next time
+    df.to_csv("data//"+asset+"//"+asset+"_MERRA2_hourly.csv")
